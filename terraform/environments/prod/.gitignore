@@ -1,0 +1,11 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+*.tfvars.backup
+tfplan
+
+# Generated files (from gitops-sync.tf)
+generated/gitops-values.yaml
+generated/*.yaml

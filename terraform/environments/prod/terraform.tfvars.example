@@ -1,0 +1,56 @@
+# Production Environment - Terraform Variables Example
+# Copy this file to terraform.tfvars and update with your values
+
+# General
+project_name = "expense-tracker"
+environment  = "prod"
+aws_region   = "us-east-1"
+
+# Domain
+domain_name = "roctl23.online"
+
+# GitHub Repository for OIDC
+github_repository = "roeebronfeld/Expense-Tracker-App-Public"
+github_branch     = "main"
+
+# ─── Ephemeral Secrets (recreated on every apply) ───
+
+# GitHub App private key for ArgoCD repo access
+# Get from: GitHub → Settings → Developer settings → GitHub Apps → Private keys
+github_app_private_key = <<-EOT
+-----BEGIN RSA PRIVATE KEY-----
+YOUR_GITHUB_APP_PRIVATE_KEY_HERE
+-----END RSA PRIVATE KEY-----
+EOT
+
+# Google OAuth credentials for Grafana SSO (optional — leave empty to disable SSO)
+# grafana_oauth_client_id     = "xxxxx.apps.googleusercontent.com"
+# grafana_oauth_client_secret = "GOCSPX-xxxxx"
+
+# Google OAuth credentials for ArgoCD SSO (optional — leave empty to disable SSO)
+# argocd_oauth_client_id     = "xxxxx.apps.googleusercontent.com"
+# argocd_oauth_client_secret = "GOCSPX-xxxxx"
+
+# EKS Configuration
+eks_cluster_version = "1.31"
+
+eks_node_groups = {
+  general = {
+    instance_types = ["t3.medium", "t3a.medium"]
+    capacity_type  = "ON_DEMAND"
+    min_size       = 1
+    max_size       = 3
+    desired_size   = 2
+    disk_size      = 30
+    labels = {
+      "node-type" = "general"
+    }
+    taints = []
+  }
+}
+
+# VPC Configuration
+vpc_cidr           = "10.0.0.0/16"
+az_count           = 2
+enable_nat_gateway = true
+single_nat_gateway = true  
