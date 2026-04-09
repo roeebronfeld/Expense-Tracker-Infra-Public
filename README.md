@@ -1,105 +1,177 @@
-# Expense Tracker - Infrastructure
+# Expense Tracker Infra
 
-Terraform infrastructure for the Expense Tracker application on AWS EKS.
+Terraform infrastructure for an ephemeral AWS/EKS production-style stack that runs the Expense Tracker platform.
 
-## Architecture: Single Ephemeral Stack
+This repository is the provisioning entry point for the platform layer. It creates the AWS foundation, bootstraps ArgoCD, wires GitHub OIDC for CI/CD, provisions runtime secrets, and is intentionally designed so the stack can be rebuilt from scratch with minimal manual steps.
 
-Everything lives in one Terraform stack (`terraform/environments/prod/`). Run `terraform destroy` → `terraform apply` to rebuild from scratch with zero manual steps. Only two things persist outside the stack:
+## Visual Overview
 
-- **S3 state bucket** (`roeebron-expense-tracker-tf-state`) — created once via `terraform/bootstrap/`
-- **Route53 hosted zone** (`roctl23.online`) — managed outside Terraform
+![Expense Tracker platform architecture](docs/assets/platform-architecture.png)
 
-### What the stack creates
+## What This Repo Covers
 
-- VPC (2 AZs, public + private subnets, single NAT gateway)
-- EKS cluster (v1.31, 2× t3.medium, AL2023 AMI, prefix delegation: 110 pods/node)
-- ECR repositories (backend + frontend)
-- ACM certificates (wildcard for `*.roctl23.online` and `*.prod.roctl23.online`)
-- IAM roles (Pod Identity for LB controller, external-dns, cert-manager, ESO, fluent-bit)
-- Secrets Manager secrets (`recovery_window_in_days = 0` — immediate delete on destroy)
-- CloudWatch log group (`/eks/expense-tracker-prod/containers`, 30-day retention)
-- ArgoCD (Helm chart v7.3.11, GitHub App auth, app-of-apps bootstrap)
-- StorageClass `gp2` marked as default
+- VPC, subnets, routing, and security foundations
+- EKS cluster provisioning
+- ECR registries for backend and frontend images
+- ACM certificates
+- IAM roles for GitHub Actions and Kubernetes platform services
+- EKS Pod Identity associations
+- AWS Secrets Manager secrets for runtime and platform auth
+- CloudWatch logging target for Fluent Bit
+- ArgoCD bootstrap from Terraform
 
-External credentials (GitHub App key, OAuth) are passed via `terraform.tfvars`.
-Internal credentials (Grafana admin password) are auto-generated.
+## Observability Snapshot
 
-ArgoCD bootstraps all applications from the [GitOps repo](https://github.com/roeebronfeld/Expense-Tracker-gitops).
+![Grafana Kubernetes overview](docs/assets/grafana-kubernetes-overview.png)
 
-## Prerequisites
+## Design Goal
 
-- AWS CLI configured (account `123456789012`, region `us-east-1`)
-- Terraform >= 1.5.0
-- kubectl
-- S3 bucket `roeebron-expense-tracker-tf-state` (created via `terraform/bootstrap/`)
+The stack is built around an ephemeral workflow:
+
+```text
+terraform apply
+  -> cluster comes up
+  -> ArgoCD bootstraps
+  -> platform services converge
+  -> app becomes reachable
+terraform destroy
+  -> ephemeral resources are deleted cleanly
+```
+
+Only two resources are expected to persist outside the stack:
+
+- the S3 bucket used for Terraform remote state
+- the Route53 hosted zone used by the environment
+
+## Architecture Highlights
+
+| Area | What It Does |
+| --- | --- |
+| `terraform/bootstrap` | one-time backend bucket setup |
+| `terraform/environments/prod/main.tf` | VPC, EKS, ECR, ACM, IAM, storage |
+| `terraform/environments/prod/argocd.tf` | ArgoCD Helm release and root app bootstrap |
+| `terraform/environments/prod/secrets.tf` | Secrets Manager objects and generated credentials |
+| `terraform/environments/prod/pod-identity.tf` | Pod Identity bindings for cluster services |
+| `terraform/environments/prod/logging.tf` | CloudWatch log group and logging integration |
+| `terraform/modules/*` | reusable modules for ECR, ACM, IAM, and GitHub OIDC |
+
+## What Terraform Creates
+
+| Resource Group | Details |
+| --- | --- |
+| Networking | VPC, public/private subnets, NAT, routing |
+| Kubernetes | EKS control plane, managed node group, default storage class |
+| Registry | backend/frontend ECR repositories |
+| TLS | wildcard ACM certificates |
+| Identity | IAM roles, Pod Identity, GitHub Actions OIDC trust |
+| Secrets | GitHub App key, PostgreSQL credentials, Grafana auth placeholders |
+| Logging | CloudWatch log group for container logs |
+| GitOps | ArgoCD installed and pointed at the GitOps repo |
+
+## Public-Safe Placeholders
+
+This public repository is sanitized by design.
+
+| Placeholder | Meaning |
+| --- | --- |
+| `123456789012` | sample AWS account ID |
+| `YOUR_GITHUB_APP_ID` | replace with your GitHub App ID |
+| `YOUR_GITHUB_APP_INSTALLATION_ID` | replace with your installation ID |
+| `YOUR_GITHUB_APP_PRIVATE_KEY_HERE` | replace only in local `terraform.tfvars` |
+| `203.0.113.10/32` | sample allowlist CIDR for ops endpoints |
+
+Do not commit:
+
+- `terraform.tfvars`
+- `*.tfstate`
+- AWS credentials
+- kubeconfig files
+- private keys
+- OAuth client secrets
 
 ## Quick Start
 
+### 1. Bootstrap remote state
+
 ```bash
-# 1. First-time only: create S3 state bucket
 cd terraform/bootstrap
-terraform init && terraform apply
-
-# 2. Deploy infrastructure
-cd ../environments/prod
-cp terraform.tfvars.example terraform.tfvars   # Edit with your values
 terraform init
-terraform apply   # ~15 min
-
-# 3. Configure kubectl
-aws eks update-kubeconfig --region us-east-1 --name expense-tracker-prod-cluster
-
-# ArgoCD auto-syncs all apps. Wait ~5 min for full convergence.
+terraform apply
 ```
 
-### Destroy and recreate (zero manual steps)
+### 2. Configure the prod environment
+
+```bash
+cd ../environments/prod
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Populate `terraform.tfvars` with your own values before applying.
+
+### 3. Deploy the stack
+
+```bash
+terraform init
+terraform apply
+aws eks update-kubeconfig --region us-east-1 --name expense-tracker-prod-cluster
+```
+
+### 4. Validate the platform
+
+```bash
+kubectl get nodes
+kubectl get pods -A
+kubectl get ingress -A
+```
+
+## Destroy Workflow
 
 ```bash
 cd terraform/environments/prod
-terraform destroy   # ~10 min
-terraform apply     # ~15 min
-aws eks update-kubeconfig --region us-east-1 --name expense-tracker-prod-cluster
+terraform destroy
 ```
 
-## Key Design Decisions
+Use these runbooks for the full operating flow:
 
-| Decision | Rationale |
-|----------|-----------|
-| Single ephemeral stack | Ensures `destroy` → `apply` works with zero manual steps |
-| `recovery_window = 0` | Secrets deleted immediately — no 7/30-day wait on destroy |
-| AL2023 AMI | Native prefix delegation support (110 pods/node vs 17) |
-| Pod Identity | Eliminates IRSA annotations in GitOps — IAM managed entirely in Terraform |
-| `gp2` default SC | Ensures PVCs bind without explicit storageClassName |
-| GitHub App auth | ArgoCD authenticates to private GitOps repo via GitHub App (no PATs) |
-| Single NAT gateway | Cost optimization for non-HA learning project |
-| CloudWatch + FluentBit | Centralized logging with 30-day retention, no self-hosted log stack |
+- [EPHEMERAL_STACK_RUNBOOK.md](EPHEMERAL_STACK_RUNBOOK.md)
+- [DESTROY_RUNBOOK.md](DESTROY_RUNBOOK.md)
 
-## Terraform State
+## Why The Design Looks Like This
 
-| Stack | S3 Key |
-|-------|--------|
-| Bootstrap | Local (one-time) |
-| Prod | `expense-tracker/prod/terraform.tfstate` |
+| Decision | Reason |
+| --- | --- |
+| Single prod stack | easier to reason about and easier to rebuild for demos |
+| Ephemeral Secrets Manager resources | avoids teardown drift and long deletion windows |
+| GitHub OIDC | CI/CD can assume AWS roles without static AWS keys |
+| GitHub App auth for ArgoCD | repository access without PAT sprawl |
+| Pod Identity | AWS permissions managed in Terraform, not spread through manifests |
+| External Secrets | runtime credentials originate in Secrets Manager |
+| Separate GitOps repo | application desired state stays auditable and declarative |
 
-## Directory Structure
+## Repository Structure
 
-```
+```text
 terraform/
-├── bootstrap/           # One-time S3 backend setup
+├── bootstrap/
 │   └── main.tf
 ├── environments/
-│   └── prod/            # Single ephemeral stack (destroy/apply freely)
-│       ├── main.tf      # VPC, EKS, ECR, IAM, ACM, StorageClass
-│       ├── argocd.tf    # ArgoCD Helm release + repo credentials + app-of-apps
-│       ├── secrets.tf   # Secrets Manager (GitHub App, OIDC, Grafana admin)
-│       ├── logging.tf   # CloudWatch log group + FluentBit IAM
-│       ├── pod-identity.tf  # EKS Pod Identity associations
-│       ├── variables.tf
+│   └── prod/
+│       ├── argocd.tf
+│       ├── logging.tf
+│       ├── main.tf
 │       ├── outputs.tf
-│       └── terraform.tfvars.example
-└── modules/             # Reusable modules
-    ├── acm/             # ACM certificate with DNS validation
-    ├── ecr/             # ECR repositories with lifecycle policies
-    ├── github-oidc/     # GitHub Actions OIDC authentication
-    └── iam/             # IAM roles for K8s controllers (Pod Identity)
+│       ├── pod-identity.tf
+│       ├── secrets.tf
+│       ├── terraform.tfvars.example
+│       └── variables.tf
+└── modules/
+    ├── acm/
+    ├── ecr/
+    ├── github-oidc/
+    └── iam/
 ```
+
+## Related Repositories
+
+- [Expense-Tracker-App-Public](https://github.com/roeebronfeld/Expense-Tracker-App-Public) for the application code and GitHub Actions pipelines
+- [Expense-Tracker-gitops-Public](https://github.com/roeebronfeld/Expense-Tracker-gitops-Public) for ArgoCD applications, Helm charts, and production values
